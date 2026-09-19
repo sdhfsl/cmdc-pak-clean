@@ -1,0 +1,11 @@
+# build artifacts
+*.exe
+cmdc-pak-clean
+
+# runtime files
+*.log
+status.json
+cfg*/
+
+# local scratch
+*.html
