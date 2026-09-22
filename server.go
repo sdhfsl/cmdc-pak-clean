@@ -97,7 +97,9 @@ func loadUsage() *usageInfo {
 		}
 		req.Header.Set("Authorization", "Bearer "+auth.ApiKey)
 		req.Header.Set("User-Agent", "cli")
-		req.Header.Set("x-command-code-version", cliVersionGet())
+		if v := cliVersionGet(); v != "" {
+			req.Header.Set("x-command-code-version", v)
+		}
 		req.Header.Set("x-cli-environment", "production")
 		req.Header.Set("x-project-slug", projectSlug)
 		resp, err := upstreamClient().Do(req)
@@ -630,7 +632,11 @@ func main() {
 	}
 	models, _ := snapshotCatalog()
 	if len(models) > 0 {
-		logLine("model catalog: %d models, cli v%s", len(models), cliVersionGet())
+		if v := cliVersionGet(); v != "" {
+			logLine("model catalog: %d models, cli v%s", len(models), v)
+		} else {
+			logLine("model catalog: %d models (cli version unknown)", len(models))
+		}
 	} else {
 		logLine("model catalog: using %d fallback models", len(fallbackModels))
 	}

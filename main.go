@@ -29,14 +29,16 @@ type Config struct {
 }
 
 const (
-	gatewayAPI         = "https://api.commandcode.ai"
-	fallbackCliVersion = "0.41.1"
-	generatePath       = "/alpha/generate"
+	gatewayAPI   = "https://api.commandcode.ai"
+	generatePath = "/alpha/generate"
 	// Project context shells out to git; keep the cache long enough that the
 	// request hot path rarely pays for it. Auth is a local file read.
 	ctxCacheTTL  = 60 * time.Second
 	authCacheTTL = 30 * time.Second
-	maxBodyBytes = 12 << 20
+	// How often the bundled CLI version is re-read from disk (no restart
+	// needed after a desktop-app update).
+	cliVersionTTL = 60 * time.Second
+	maxBodyBytes  = 12 << 20
 )
 
 var (
@@ -53,13 +55,34 @@ var (
 	workDir     string
 
 	cliVersionMu sync.RWMutex
-	cliVersion   = fallbackCliVersion
+	// Empty until the bundled CLI's package.json is read; the header is
+	// omitted while empty, matching the desktop app's behavior.
+	cliVersion   string
+	cliVersionAt time.Time
 )
 
-// cliVersionGet returns the detected CLI version (goroutine-safe).
+// cliVersionGet returns the bundled CLI version and re-reads it from disk at
+// most once per cliVersionTTL, so desktop-app updates are picked up without
+// restarting the proxy. Disk reads happen only after the TTL expires.
 func cliVersionGet() string {
 	cliVersionMu.RLock()
-	defer cliVersionMu.RUnlock()
+	v, at := cliVersion, cliVersionAt
+	cliVersionMu.RUnlock()
+	if v != "" && time.Since(at) < cliVersionTTL {
+		return v
+	}
+	cliVersionMu.Lock()
+	defer cliVersionMu.Unlock()
+	// Re-check under the write lock: another goroutine may have refreshed.
+	if cliVersion != "" && time.Since(cliVersionAt) < cliVersionTTL {
+		return cliVersion
+	}
+	if hp := findHarnessPath(); hp != "" {
+		if nv := parseCLIVersion(hp); nv != "" {
+			cliVersion = nv
+		}
+	}
+	cliVersionAt = time.Now() // also on failure: avoid hammering the disk
 	return cliVersion
 }
 
@@ -68,6 +91,7 @@ func cliVersionSet(v string) {
 	cliVersionMu.Lock()
 	defer cliVersionMu.Unlock()
 	cliVersion = v
+	cliVersionAt = time.Now()
 }
 
 var projectDirRe = regexp.MustCompile(`(?i)Primary working directory:\s*([^\r\n]+)`)
@@ -78,13 +102,15 @@ func maskToken(t string) string {
 	if t == "" {
 		return ""
 	}
-	if len(t) <= 4 {
-		return t[:1] + "..."
+	r := []rune(t) // rune-safe: never split a non-ASCII character
+	switch {
+	case len(r) <= 4:
+		return string(r[:1]) + "..."
+	case len(r) <= 8:
+		return string(r[:2]) + "..." + string(r[len(r)-2:])
+	default:
+		return string(r[:4]) + "..." + string(r[len(r)-4:])
 	}
-	if len(t) <= 8 {
-		return t[:2] + "..." + t[len(t)-2:]
-	}
-	return t[:4] + "..." + t[len(t)-4:]
 }
 
 func logLine(format string, args ...any) {
@@ -349,6 +375,24 @@ func findHarnessPath() string {
 }
 
 func parseCLIVersion(harnessPath string) string {
+	appDir := strings.Replace(harnessPath,
+		filepath.Join("node_modules", "@commandcode", "harness", "dist", "index.js"), "", 1)
+	// Current desktop layout: the bundled command-code CLI's own
+	// package.json carries the version the gateway expects in
+	// x-command-code-version (the app reads it the same way).
+	if appDir != harnessPath {
+		if b, err := os.ReadFile(filepath.Join(appDir, "node_modules", "command-code", "package.json")); err == nil {
+			var pkg struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(b, &pkg) == nil {
+				if v := strings.TrimSpace(pkg.Version); v != "" {
+					return v
+				}
+			}
+		}
+	}
+	// Legacy desktop layout kept the version in out/main/index.js.
 	mainPath := strings.Replace(harnessPath,
 		filepath.Join("node_modules", "@commandcode", "harness", "dist", "index.js"),
 		filepath.Join("out", "main", "index.js"), 1)
@@ -523,7 +567,11 @@ func ensureModelCatalog() {
 		}
 	}
 	catalogMtime = st.ModTime()
-	logLine("model catalog reloaded: %d models, cli v%s", len(parsedModels), cliVersionGet())
+	if v := cliVersionGet(); v != "" {
+		logLine("model catalog reloaded: %d models, cli v%s", len(parsedModels), v)
+	} else {
+		logLine("model catalog reloaded: %d models (cli version unknown)", len(parsedModels))
+	}
 }
 
 func snapshotCatalog() ([]modelSpec, map[string]bool) {

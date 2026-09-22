@@ -223,10 +223,22 @@ func buildWireMessages(msgs []any) ([]any, string, error) {
 					id, _ := tc["id"].(string)
 					fn, _ := tc["function"].(map[string]any)
 					tname, _ := fn["name"].(string)
-					argsStr, _ := fn["arguments"].(string)
 					var input any
-					if err := json.Unmarshal([]byte(argsStr), &input); err != nil || input == nil {
-						input = map[string]any{"raw": argsStr}
+					switch a := fn["arguments"].(type) {
+					case string:
+						if err := json.Unmarshal([]byte(a), &input); err != nil || input == nil {
+							if strings.TrimSpace(a) == "" {
+								input = map[string]any{}
+							} else {
+								input = map[string]any{"raw": a}
+							}
+						}
+					case map[string]any, []any:
+						// Non-standard clients may send the arguments object
+						// directly; use it as-is instead of dropping it.
+						input = a
+					default:
+						input = map[string]any{}
 					}
 					toolNameByID[id] = tname
 					blocks = append(blocks, map[string]any{"type": "tool-call", "toolCallId": id, "toolName": tname, "input": input})

@@ -109,7 +109,9 @@ func forwardToGateway(ctx context.Context, auth *commandCodeAuth, model string, 
 	}
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("User-Agent", "cli")
-	upReq.Header.Set("x-command-code-version", cliVersionGet())
+	if v := cliVersionGet(); v != "" {
+		upReq.Header.Set("x-command-code-version", v)
+	}
 	upReq.Header.Set("x-cli-environment", "production")
 	upReq.Header.Set("x-project-slug", slug)
 	upReq.Header.Set("x-taste-learning", "false")
@@ -313,8 +315,8 @@ func readClientBody(r *http.Request) (map[string]any, error) {
 // each protocol lane understands.
 func gatewayError(w http.ResponseWriter, status int, body []byte, shape string, model string) {
 	msg := upstreamMessage(body)
-	if len(msg) > 300 {
-		msg = msg[:300]
+	if r := []rune(msg); len(r) > 300 {
+		msg = string(r[:300]) // rune-safe: never split a UTF-8 character
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
