@@ -622,7 +622,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			effort = v
 		}
 	}
-	// 思考与正文共用配额：开思考时保底 8000，没指定则默认 128000。
+	// 思考与正文共用配额：开启思考时统一抬升至 128000（上游上限）。
 	if raisedMax, raised := ensureThinkingBudget(maxTokens, clientMaxTokens, effort); raised {
 		logLine("%s: max_tokens %d too small for thinking, raised to %d", model, maxTokens, raisedMax)
 		maxTokens = raisedMax

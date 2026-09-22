@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -65,4 +66,43 @@ func TestIdleTimeoutReaderNoFalsePositive(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	_ = it.Close()
+}
+
+// TestIdleTimeoutReaderConcurrentClose exercises the two real Close paths
+// (handler defer + client-gone AfterFunc) racing with an in-flight Read.
+// Run with -race to verify the atomic state is race-free.
+func TestIdleTimeoutReaderConcurrentClose(t *testing.T) {
+	body := &blockingBody{done: make(chan struct{})}
+	it := newIdleTimeoutReader(body, time.Hour) // timer must not interfere
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 8)
+		_, _ = it.Read(buf)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = it.Close()
+		}()
+	}
+	wg.Wait()
+}
+
+// blockingBody blocks on Read until Close, mimicking a stalled upstream.
+type blockingBody struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	<-b.done
+	return 0, io.ErrClosedPipe
+}
+func (b *blockingBody) Close() error {
+	b.once.Do(func() { close(b.done) })
+	return nil
 }

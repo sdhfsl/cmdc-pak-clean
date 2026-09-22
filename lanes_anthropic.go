@@ -554,8 +554,8 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 			effort = "max"
 		}
 	}
-	// 思考与正文共用 max_tokens 配额：开思考时保底 8000，客户端没指定则默认
-	// 128000，避免思考吃光配额导致正文被截断（finishReason=length）。
+	// 思考与正文共用 max_tokens 配额：开启思考时统一抬升至 128000（上游上限），
+	// 避免思考吃光配额导致正文被截断（finishReason=length）。
 	if raisedMax, raised := ensureThinkingBudget(maxTokens, clientMaxTokens, effort); raised {
 		logLine("%s: max_tokens %d too small for thinking, raised to %d", model, maxTokens, raisedMax)
 		maxTokens = raisedMax

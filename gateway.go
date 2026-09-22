@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -247,12 +248,13 @@ func upstreamIdleTimeout() time.Duration {
 }
 
 // idleTimeoutReader closes the underlying body when no data arrives for d.
-// The pending Read returns an error, which unwinds the stream loop.
+// The pending Read returns an error, which unwinds the stream loop. Close is
+// safe to call concurrently (handler defer + client-gone AfterFunc).
 type idleTimeoutReader struct {
 	rc     io.ReadCloser
 	d      time.Duration
 	timer  *time.Timer
-	closed bool
+	closed atomic.Bool
 }
 
 func newIdleTimeoutReader(rc io.ReadCloser, d time.Duration) *idleTimeoutReader {
@@ -266,14 +268,14 @@ func newIdleTimeoutReader(rc io.ReadCloser, d time.Duration) *idleTimeoutReader 
 
 func (it *idleTimeoutReader) Read(p []byte) (int, error) {
 	n, err := it.rc.Read(p)
-	if n > 0 && !it.closed {
+	if n > 0 && !it.closed.Load() {
 		it.timer.Reset(it.d)
 	}
 	return n, err
 }
 
 func (it *idleTimeoutReader) Close() error {
-	it.closed = true
+	it.closed.Store(true)
 	it.timer.Stop()
 	return it.rc.Close()
 }
