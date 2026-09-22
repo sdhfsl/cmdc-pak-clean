@@ -88,7 +88,7 @@ func blockPrivateHost(h string) error {
 	return nil
 }
 
-func resolveAndCheckHost(host string, port string) error {
+func resolveAndCheckHost(host string) error {
 	if err := blockPrivateHost(strings.ToLower(host)); err != nil {
 		return err
 	}
@@ -96,7 +96,6 @@ func resolveAndCheckHost(host string, port string) error {
 	if err != nil || len(addrs) == 0 {
 		return fmt.Errorf("image fetch: DNS resolve failed for %q", host)
 	}
-	_ = port
 	for _, a := range addrs {
 		if err := blockPrivateHost(strings.ToLower(a.IP.String())); err != nil {
 			return fmt.Errorf("image fetch: resolved private IP blocked")
@@ -117,7 +116,7 @@ func fetchImageDataURI(rawURL string) (string, error) {
 	if err := isPublicImageURL(rawURL); err != nil {
 		return "", err
 	}
-	if err := resolveAndCheckHost(u.Hostname(), u.Port()); err != nil {
+	if err := resolveAndCheckHost(u.Hostname()); err != nil {
 		return "", err
 	}
 	client := imageFetchClient()

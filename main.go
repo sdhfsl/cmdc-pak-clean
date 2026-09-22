@@ -63,18 +63,20 @@ var (
 
 // cliVersionGet returns the bundled CLI version and re-reads it from disk at
 // most once per cliVersionTTL, so desktop-app updates are picked up without
-// restarting the proxy. Disk reads happen only after the TTL expires.
+// restarting the proxy. Disk reads happen only after the TTL expires —
+// including when the version could not be read, so a missing desktop app
+// does not turn every request into a filesystem probe.
 func cliVersionGet() string {
 	cliVersionMu.RLock()
 	v, at := cliVersion, cliVersionAt
 	cliVersionMu.RUnlock()
-	if v != "" && time.Since(at) < cliVersionTTL {
+	if !at.IsZero() && time.Since(at) < cliVersionTTL {
 		return v
 	}
 	cliVersionMu.Lock()
 	defer cliVersionMu.Unlock()
 	// Re-check under the write lock: another goroutine may have refreshed.
-	if cliVersion != "" && time.Since(cliVersionAt) < cliVersionTTL {
+	if !cliVersionAt.IsZero() && time.Since(cliVersionAt) < cliVersionTTL {
 		return cliVersion
 	}
 	if hp := findHarnessPath(); hp != "" {
@@ -598,6 +600,10 @@ const (
 	thinkingTokenFloor   = 128000
 	thinkingTokenDefault = 128000
 	maxTokenCap          = 128000
+	// Requests below this quota are treated as auxiliary calls (title
+	// generation, summaries) where forced max thinking only wastes time and
+	// budget, so it stays off unless the client asks for it explicitly.
+	auxTokenThreshold = 8192
 )
 
 // capMaxTokens clamps client-supplied output quotas to the safe upstream
@@ -799,10 +805,17 @@ func toolCallArgs(ev map[string]any) string {
 			return string(b)
 		}
 	}
-	return ""
+	// Never emit an empty string: clients parse this as JSON and would
+	// fail on "".
+	return "{}"
 }
 
 func eventErrorText(ev map[string]any) string {
+	// The gateway emits error as a plain string in some failure modes
+	// (upstream readStreamErrorEvent handles both shapes).
+	if s, ok := ev["error"].(string); ok && s != "" {
+		return s
+	}
 	if e, ok := ev["error"].(map[string]any); ok {
 		if m, _ := e["message"].(string); m != "" {
 			return m
@@ -854,6 +867,15 @@ var ctxCache = struct {
 	m map[string]ctxCacheEntry
 }{m: make(map[string]ctxCacheEntry)}
 
+// Context payload guards: the project snapshot travels in every upstream
+// request, so a huge repo (many files / dirty tree) would otherwise put
+// megabytes of noise into the model's context. Both limits are far above
+// anything the model needs.
+const (
+	maxCtxOutputRunes = 8000
+	maxStructureItems = 500
+)
+
 func shellOutput(dir, name string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
@@ -863,7 +885,11 @@ func shellOutput(dir, name string, args ...string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	s := strings.TrimSpace(string(out))
+	if r := []rune(s); len(r) > maxCtxOutputRunes {
+		s = string(r[:maxCtxOutputRunes]) + "\n…(truncated)"
+	}
+	return s
 }
 
 func readStructure(dir string) []string {
@@ -877,6 +903,9 @@ func readStructure(dir string) []string {
 			roots = append(roots, n)
 		}
 		sort.Strings(roots)
+		if len(roots) > maxStructureItems {
+			roots = append(roots[:maxStructureItems], "…(truncated)")
+		}
 	}
 	return roots
 }

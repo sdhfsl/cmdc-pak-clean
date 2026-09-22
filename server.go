@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +205,21 @@ func isLoopbackHost(host string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
+// isTrustedOrigin blocks CSRF from web pages: browsers send Origin for
+// cross-site requests, while the dashboard itself is same-origin and
+// non-browser clients (curl, SDKs) send no Origin at all.
+func isTrustedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(u.Host)
+}
+
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	ensureModelCatalog()
 	cfgMu.RLock()
@@ -254,6 +270,11 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isLoopbackHost(r.Host) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !isTrustedOrigin(r) {
+		logLine("POST /api/config from cross-origin page blocked (origin=%s)", r.Header.Get("Origin"))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -345,7 +366,9 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	data := make([]any, 0, len(models))
 	for _, m := range models {
-		entry := map[string]any{"id": m.ID, "object": "model", "owned_by": "commandcode"}
+		// created is part of the OpenAI Model object; include it for clients
+		// that validate against the spec.
+		entry := map[string]any{"id": m.ID, "object": "model", "created": 0, "owned_by": "commandcode"}
 		if m.ContextWindow > 0 {
 			entry["context_window"] = m.ContextWindow
 		}
