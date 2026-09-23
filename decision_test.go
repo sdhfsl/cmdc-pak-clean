@@ -178,3 +178,40 @@ func TestIsTrustedOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestConversationKeyForToolSurface(t *testing.T) {
+	body := map[string]any{"conversation_id": "sess-1"}
+	a := []any{
+		map[string]any{"name": "read", "description": "d"},
+		map[string]any{"name": "edit", "description": "d"},
+	}
+	b := []any{
+		map[string]any{"name": "read", "description": "d"},
+		map[string]any{"name": "edit", "description": "d"},
+		map[string]any{"name": "bash", "description": "d"},
+	}
+	reordered := []any{
+		map[string]any{"name": "edit", "description": "d"},
+		map[string]any{"name": "read", "description": "d"},
+	}
+	ka := conversationKeyFor(body, a)
+	kb := conversationKeyFor(body, b)
+	kr := conversationKeyFor(body, reordered)
+	kn := conversationKeyFor(body, nil)
+	if ka == "" {
+		t.Fatal("base key must not be empty")
+	}
+	if kb == ka {
+		t.Error("different tool surfaces must produce different keys")
+	}
+	if kr != ka {
+		t.Error("tool order must not change the key")
+	}
+	if kn != conversationKey(body) {
+		t.Error("no tools must degrade to the plain conversation key")
+	}
+	if conversationKeyFor(map[string]any{}, a) != "" {
+		t.Error("no conversation id must still return empty")
+	}
+	t.Logf("keys: base=%q +tool=%q", kn, ka)
+}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,17 +286,54 @@ func (it *idleTimeoutReader) Close() error {
 // conversationKey derives a stable key from client-supplied conversation
 // identifiers. Falls back to "" (caller generates a fresh UUID).
 func conversationKey(body map[string]any) string {
+	return conversationKeyFor(body, nil)
+}
+
+// conversationKeyFor extends conversationKey with the given tool set: when
+// the declared tools change, the key changes too, so the upstream thread is
+// rotated instead of reusing a prefix cache built on a stale tool surface.
+// This mirrors the desktop harness exemption for models that loop when the
+// tool surface shifts (notably the muse-spark family).
+func conversationKeyFor(body map[string]any, tools []any) string {
+	var base string
 	for _, k := range []string{"conversation_id", "conversation", "session_id", "thread_id"} {
 		if s, _ := body[k].(string); s != "" {
 			h := sha1.Sum([]byte(s))
-			return "conv:" + hex.EncodeToString(h[:8])
+			base = "conv:" + hex.EncodeToString(h[:8])
+			break
 		}
 	}
-	if prev, _ := body["previous_response_id"].(string); prev != "" {
-		h := sha1.Sum([]byte(prev))
-		return "prev:" + hex.EncodeToString(h[:8])
+	if base == "" {
+		if prev, _ := body["previous_response_id"].(string); prev != "" {
+			h := sha1.Sum([]byte(prev))
+			base = "prev:" + hex.EncodeToString(h[:8])
+		}
 	}
-	return ""
+	if base == "" || len(tools) == 0 {
+		return base
+	}
+	names := make([]string, 0, len(tools))
+	for _, raw := range tools {
+		if t, ok := raw.(map[string]any); ok {
+			// Anthropic / Responses shape: {"name": ...}
+			if n, _ := t["name"].(string); n != "" {
+				names = append(names, n)
+				continue
+			}
+			// OpenAI chat shape: {"function": {"name": ...}}
+			if fn, ok := t["function"].(map[string]any); ok {
+				if n, _ := fn["name"].(string); n != "" {
+					names = append(names, n)
+				}
+			}
+		}
+		if len(names) >= 64 {
+			break
+		}
+	}
+	sort.Strings(names)
+	h := sha1.Sum([]byte(strings.Join(names, "\x00")))
+	return base + ":tls" + hex.EncodeToString(h[:4])
 }
 
 // readClientBody reads a bounded request body and returns it as a map.

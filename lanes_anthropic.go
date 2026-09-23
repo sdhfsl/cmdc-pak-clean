@@ -596,7 +596,7 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		extras["stop"] = v
 	}
-	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKey(bodyMap)), extras, ctxDir(msgs))
+	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKeyFor(bodyMap, toolsRaw)), extras, ctxDir(msgs))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(502)

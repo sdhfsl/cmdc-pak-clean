@@ -552,7 +552,12 @@ async function poll(){
     if(document.activeElement!==$('port3')) $('port3').value=v.port;
     $('uptime').textContent=fmt(v.uptime_seconds);
     if(v.usage){
-      if(v.usage.error){ $('uBalance').textContent='—'; $('uErr').textContent='('+v.usage.error+')'; }
+      if(v.usage.error){
+        $('uBalance').textContent='—';
+        $('uDetail').textContent='';
+        $('uWindows').textContent='窗口用量：—';
+        $('uErr').textContent='('+v.usage.error+')';
+      }
       else{
         $('uErr').textContent='';
         const num=x=>(typeof x==='number'&&isFinite(x))?x:0;
@@ -566,6 +571,14 @@ async function poll(){
         const fmtW=(w,label)=>w? label+' $'+num(w.used).toFixed(2)+'/$'+(w.cap||'—')+(w.exceeded?' ❌':'') : '';
         $('uWindows').textContent='窗口用量：'+[fmtW(v.usage.five_hour,'5小时'),fmtW(v.usage.weekly,'本周')].filter(Boolean).join(' · ');
       }
+    }
+    else {
+      // No usage attached (empty on cold start, or backend refresh in
+      // flight): clear so the panel never shows stale balances.
+      $('uBalance').textContent='—';
+      $('uDetail').textContent='';
+      $('uWindows').textContent='窗口用量：—';
+      $('uErr').textContent='';
     }
     const rows=$('modelRows');
     if(v.models&&v.models.length){

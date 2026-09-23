@@ -594,7 +594,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	chatDir := ctxDir(msgs)
 	extras := pickExtras(bodyMap, "top_p", "stop", "seed",
 		"presence_penalty", "frequency_penalty", "parallel_tool_calls")
-	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKey(bodyMap)), extras, chatDir)
+	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKeyFor(bodyMap, toolsRaw)), extras, chatDir)
 	if err != nil {
 		proxyError(w, 502, "upstream error: "+err.Error())
 		logLine("%s %s -> 502 %v", r.Method, r.URL.Path, err)

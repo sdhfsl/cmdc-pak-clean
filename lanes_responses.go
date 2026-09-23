@@ -634,7 +634,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	extras := pickExtras(bodyMap, "top_p")
-	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKey(bodyMap)), extras, respDir(bodyMap))
+	upResp, err := forwardToGateway(r.Context(), auth, model, wireMsgs, system, wireTools, maxTokens, bodyMap["temperature"], effort, stableThreadID(conversationKeyFor(bodyMap, toolsRaw)), extras, respDir(bodyMap))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(502)
