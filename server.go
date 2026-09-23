@@ -186,11 +186,8 @@ func isSelfInstance(port int) bool {
 // fallbackCatalog returns the built-in model list used when the desktop
 // harness cannot be read. Shared by /api/status and /v1/models.
 func fallbackCatalog() []modelSpec {
-	models := make([]modelSpec, 0, len(fallbackModels))
-	for _, id := range fallbackModels {
-		models = append(models, modelSpec{ID: id})
-	}
-	return models
+	models := make([]modelSpec, 0, len(fallbackSpecs))
+	return append(models, fallbackSpecs...)
 }
 
 // isLoopbackHost reports whether the request Host is a loopback address.
@@ -674,7 +671,7 @@ func main() {
 			logLine("model catalog: %d models (cli version unknown)", len(models))
 		}
 	} else {
-		logLine("model catalog: using %d fallback models", len(fallbackModels))
+		logLine("model catalog: using %d fallback models", len(fallbackSpecs))
 	}
 	logLine("upstream %s%s", gatewayBaseURL(), generatePath)
 	if toolNudgeEnabled() {

@@ -251,6 +251,9 @@ func loadLocalCommandCodeAuth() (*commandCodeAuth, string, error) {
 	}
 	path := findAuthPath()
 	if path == "" {
+		if tok := configToken(); tok != "" {
+			return configAuth(tok), "config", nil
+		}
 		err := fmt.Errorf("未找到本机 Command Code 凭证，请先在桌面版登录（%s）", filepath.Join("~", ".commandcode", "auth.json"))
 		authCache.Lock()
 		authCache.a, authCache.path, authCache.err, authCache.exp = nil, "", err, time.Now().Add(authCacheTTL)
@@ -266,12 +269,18 @@ func loadLocalCommandCodeAuth() (*commandCodeAuth, string, error) {
 	}
 	var a commandCodeAuth
 	if err := json.Unmarshal(b, &a); err != nil {
+		if tok := configToken(); tok != "" {
+			return configAuth(tok), "config", nil
+		}
 		authCache.Lock()
 		authCache.a, authCache.path, authCache.err, authCache.exp = nil, path, err, time.Now().Add(authCacheTTL)
 		authCache.Unlock()
 		return nil, path, err
 	}
 	if strings.TrimSpace(a.ApiKey) == "" {
+		if tok := configToken(); tok != "" {
+			return configAuth(tok), "config", nil
+		}
 		err = fmt.Errorf("auth.json 中 apiKey 为空，请重新登录")
 		authCache.Lock()
 		authCache.a, authCache.path, authCache.err, authCache.exp = nil, path, err, time.Now().Add(authCacheTTL)
@@ -282,6 +291,25 @@ func loadLocalCommandCodeAuth() (*commandCodeAuth, string, error) {
 	authCache.a, authCache.path, authCache.err, authCache.exp = &a, path, nil, time.Now().Add(authCacheTTL)
 	authCache.Unlock()
 	return &a, path, nil
+}
+
+// configToken returns the manually saved token (dashboard / CMDC_PAK_TOKEN),
+// used as a fallback credential when no local auth file exists.
+func configToken() string {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	t := strings.TrimSpace(cfg.Token)
+	if t == "" {
+		t = strings.TrimSpace(os.Getenv("CMDC_PAK_TOKEN"))
+	}
+	return t
+}
+
+// configAuth wraps a fallback token so request lanes can use it exactly like
+// a file-based credential. It is deliberately NOT cached: the dashboard can
+// replace the token at any time via /api/config.
+func configAuth(tok string) *commandCodeAuth {
+	return &commandCodeAuth{ApiKey: tok, UserName: "manual-token"}
 }
 
 // ---- upstream transport ----
@@ -334,15 +362,18 @@ var (
 	catalogMtime    time.Time
 )
 
-var fallbackModels = []string{
-	"deepseek/deepseek-v4.1-flash",
-	"deepseek/deepseek-v4-flash",
-	"xiaomi/mimo-v2.5",
-	"meta/muse-spark-1.3-contributor",
-	"z-ai/glm-5.3-flash",
-	"xai/grok-4.5",
-	"gpt-5.6-sol",
-	"MiniMaxAI/MiniMax-M3",
+// fallbackSpecs carries the known models, context windows and thinking
+// ladders used when the desktop harness cannot be read (verified against
+// the live catalog), so clients still see full capability info.
+var fallbackSpecs = []modelSpec{
+	{ID: "deepseek/deepseek-v4.1-flash", ContextWindow: 1000000, Effort: []string{"low", "high", "max"}},
+	{ID: "deepseek/deepseek-v4-flash", ContextWindow: 1000000, Effort: []string{"high", "max"}},
+	{ID: "xiaomi/mimo-v2.5", ContextWindow: 200000},
+	{ID: "meta/muse-spark-1.3-contributor", ContextWindow: 1048576, Effort: []string{"low", "medium", "high", "xhigh"}},
+	{ID: "z-ai/glm-5.3-flash", ContextWindow: 1048576, Effort: []string{"low", "high", "max"}},
+	{ID: "xai/grok-4.5", ContextWindow: 500000},
+	{ID: "gpt-5.6-sol"},
+	{ID: "MiniMaxAI/MiniMax-M3", ContextWindow: 1000000, Effort: []string{"low", "medium", "high"}},
 }
 
 // gatewayKnownExtras covers models the gateway serves but the local bundle
@@ -500,8 +531,8 @@ func loadModelCatalogAt(hp string) ([]modelSpec, string) {
 	for id := range oss {
 		ids[id] = true
 	}
-	for _, id := range fallbackModels {
-		ids[id] = true
+	for _, m := range fallbackSpecs {
+		ids[m.ID] = true
 	}
 	extraEffort := map[string][]string{}
 	extraWindow := map[string]int{}
