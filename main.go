@@ -26,6 +26,10 @@ var faviconICO []byte
 type Config struct {
 	Token string `json:"token"`
 	Port  int    `json:"port"`
+	// Last known bundled CLI version. Refreshed on every successful parse
+	// so a later unreadable harness (uninstalled desktop app) still sends a
+	// real version instead of omitting the header (gateway 403s the omit).
+	CliVersion string `json:"cli_version,omitempty"`
 }
 
 const (
@@ -85,6 +89,12 @@ func cliVersionGet() string {
 		}
 	}
 	cliVersionAt = time.Now() // also on failure: avoid hammering the disk
+	if cliVersion == "" {
+		// Harness unreadable: fall back to the last persisted version.
+		// The gateway 403s a missing version header, so a stale real
+		// version beats omitting it.
+		cliVersion = configCliVersion()
+	}
 	return cliVersion
 }
 
@@ -94,6 +104,25 @@ func cliVersionSet(v string) {
 	defer cliVersionMu.Unlock()
 	cliVersion = v
 	cliVersionAt = time.Now()
+	// Persist the last known good version so an unreadable harness later
+	// (uninstalled desktop app) still yields a real version header. The
+	// gateway 403s requests that omit it.
+	if v != "" {
+		cfgMu.RLock()
+		cur := cfg
+		cfgMu.RUnlock()
+		if cur.CliVersion != v {
+			cur.CliVersion = v
+			_ = saveConfig(cur)
+		}
+	}
+}
+
+// configCliVersion returns the last persisted CLI version, "" if none.
+func configCliVersion() string {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	return strings.TrimSpace(cfg.CliVersion)
 }
 
 var projectDirRe = regexp.MustCompile(`(?i)Primary working directory:\s*([^\r\n]+)`)
@@ -750,12 +779,35 @@ func resolveModel(m string) string {
 	if v, ok := modelAliases[lower]; ok {
 		return v
 	}
+	// Suffix mapping is a fallback for short names only: if the full id
+	// already exists in the catalog (e.g. meta/muse-spark-1.3), pass it
+	// through untouched instead of rewriting it to a different model.
 	if i := strings.LastIndex(lower, "/"); i >= 0 {
+		if knownModel(lower) {
+			return m
+		}
 		if v, ok := modelAliases[lower[i+1:]]; ok {
 			return v
 		}
 	}
 	return m
+}
+
+// knownModel reports whether id is a full model id present in the catalog
+// or the fallback list (case-insensitive).
+func knownModel(id string) bool {
+	catalog, _ := snapshotCatalog()
+	for _, m := range catalog {
+		if strings.EqualFold(m.ID, id) {
+			return true
+		}
+	}
+	for _, m := range fallbackSpecs {
+		if strings.EqualFold(m.ID, id) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- util ----
