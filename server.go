@@ -164,6 +164,9 @@ type statusResp struct {
 	Models          []modelSpec `json:"models,omitempty"`
 	Usage           *usageInfo  `json:"usage,omitempty"`
 	UpdateAvailable bool        `json:"update_available"`
+	// Nonce of the restart that spawned this instance (empty for a normal
+	// start). Lets a restarting parent verify the child, not itself.
+	RestartNonce string `json:"restart_nonce,omitempty"`
 }
 
 // isSelfInstance verifies the listener on port is our own dashboard.
@@ -258,6 +261,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		Models:          statusModels,
 		Usage:           fetchUsage(),
 		UpdateAvailable: false,
+		RestartNonce:    os.Getenv("CMDC_PAK_RESTART_NONCE"),
 	})
 }
 
@@ -314,6 +318,52 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleRestart relaunches the process on the same port. Same guards as
+// /api/config (loopback + same-origin only) since it also spawns processes.
+func handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isLoopbackHost(r.Host) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !isTrustedOrigin(r) {
+		logLine("POST /api/restart from cross-origin page blocked (origin=%s)", r.Header.Get("Origin"))
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	cfgMu.RLock()
+	port := cfg.Port
+	cfgMu.RUnlock()
+	logLine("manual restart requested, relaunching on port %d", port)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "port": port})
+	go restartProcess(port)
+}
+
+// currentListener holds the live TCP listener so a restart can release the
+// port for the child process before the parent exits. restartNonce is set
+// while a handoff is in flight; the main serve loop watches it.
+var (
+	currentListener net.Listener
+	restartMu       sync.Mutex
+	restartNonce    string
+)
+
+func restartSpawnNonce() (string, bool) {
+	restartMu.Lock()
+	defer restartMu.Unlock()
+	return restartNonce, restartNonce != ""
+}
+
+func clearRestartNonce() {
+	restartMu.Lock()
+	restartNonce = ""
+	restartMu.Unlock()
+}
+
 func restartProcess(port int) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -323,34 +373,49 @@ func restartProcess(port int) {
 	if _, pinned := os.LookupEnv("CMDC_PAK_PORT"); pinned {
 		logLine("restart: CMDC_PAK_PORT is set in the environment; dashboard port changes won't stick until it is unset")
 	}
+	// Unique token so the readiness probe can tell the new instance apart
+	// from ourselves.
+	nonce := randID(16)
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("CMDC_PAK_PORT=%d", port))
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("CMDC_PAK_PORT=%d", port),
+		fmt.Sprintf("CMDC_PAK_RESTART_NONCE=%s", nonce))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		logLine("restart: failed to spawn: %v", err)
 		return
 	}
-	logLine("restart: spawned pid=%d on port %d, waiting for readiness", cmd.Process.Pid, port)
-	go func() {
-		for i := 0; i < 60; i++ {
-			time.Sleep(300 * time.Millisecond)
-			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", port))
-			if err == nil {
-				var st struct {
-					Status        string `json:"status"`
-					UptimeSeconds int64  `json:"uptime_seconds"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&st) == nil && st.UptimeSeconds < 30 {
-					resp.Body.Close()
-					logLine("restart: new instance healthy on %d, exiting", port)
-					os.Exit(0)
-				}
-				resp.Body.Close()
-			}
+	restartMu.Lock()
+	restartNonce = nonce
+	restartMu.Unlock()
+	logLine("restart: spawned pid=%d on port %d, releasing the listener", cmd.Process.Pid, port)
+	// Hand the port over: closing the listener makes the serve loop return,
+	// and it then waits for the child to report healthy.
+	if ln := currentListener; ln != nil {
+		_ = ln.Close()
+	}
+}
+
+// waitChildHealthy polls the child until it answers with the expected nonce.
+func waitChildHealthy(port int, nonce string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", port))
+		if err != nil {
+			continue
 		}
-		logLine("restart: new instance did not become healthy, keeping current process")
-	}()
+		var st struct {
+			Nonce string `json:"restart_nonce,omitempty"`
+		}
+		ok := json.NewDecoder(resp.Body).Decode(&st) == nil && st.Nonce != "" && st.Nonce == nonce
+		resp.Body.Close()
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- models endpoint ----
@@ -487,7 +552,7 @@ body{font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;background:ra
 
   <div class="card">
     <h2>监听端口 <span class="count">保存后自动重启</span></h2>
-    <div class="field"><div class="kv"><input id="port3" type="number" style="width:110px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px"><button class="btn btn-primary" id="btn-port" style="margin-left:8px">保存并重启</button></div>
+    <div class="field"><div class="kv"><input id="port3" type="number" style="width:110px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px"><button class="btn btn-primary" id="btn-port" style="margin-left:8px">保存并重启</button><button class="btn" id="btn-restart" style="margin-left:8px">重启服务</button></div>
     <div class="hint" id="portMsg" style="margin-top:6px"></div></div>
   </div>
 </div>
@@ -531,6 +596,17 @@ $('btn-port').onclick=async()=>{
     if(res.needRestart){msg.textContent='✓ 已保存，服务自动重启中…';setTimeout(()=>location.href='http://localhost:'+res.port+'/',2500);}
     else if(!res.ok){msg.textContent='❌ '+res.message;}
     else{msg.textContent='✓ 已保存';}
+  }catch(e){msg.textContent='❌ 无法连接本地服务';}
+  b.disabled=false;
+};
+$('btn-restart').onclick=async()=>{
+  const msg=$('portMsg'); const b=$('btn-restart');
+  msg.textContent='重启中…'; b.disabled=true;
+  try{
+    const r=await fetch('/api/restart',{method:'POST'});
+    const res=await r.json();
+    if(res.ok){msg.textContent='✓ 服务重启中，页面 3 秒后自动刷新…';setTimeout(()=>location.reload(),3000);}
+    else{msg.textContent='❌ 重启失败';}
   }catch(e){msg.textContent='❌ 无法连接本地服务';}
   b.disabled=false;
 };
@@ -619,11 +695,16 @@ func main() {
 
 	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port), 400*time.Millisecond); err == nil {
 		conn.Close()
-		if isSelfInstance(cfg.Port) {
-			log.Printf("already running on %d, exiting", cfg.Port)
-			return
+		// A child spawned by /api/restart carries CMDC_PAK_RESTART_NONCE and
+		// must proceed despite the parent still holding the port; the parent
+		// exits once the child reports healthy with the matching nonce.
+		if _, isRestartChild := os.LookupEnv("CMDC_PAK_RESTART_NONCE"); !isRestartChild {
+			if isSelfInstance(cfg.Port) {
+				log.Printf("already running on %d, exiting", cfg.Port)
+				return
+			}
+			log.Printf("port %d occupied by another program, trying next ports", cfg.Port)
 		}
-		log.Printf("port %d occupied by another program, trying next ports", cfg.Port)
 	}
 
 	sessionID = "sess-" + randID(16)
@@ -639,6 +720,7 @@ func main() {
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/config", handleConfig)
+	mux.HandleFunc("/api/restart", handleRestart)
 	mux.HandleFunc("/v1/chat/completions", handleChat)
 	mux.HandleFunc("/v1/messages", handleMessages)
 	mux.HandleFunc("/messages", handleMessages)
@@ -678,8 +760,11 @@ func main() {
 		logLine("tool nudge: ON (appends tool-usage instruction to system prompt when tools are declared)")
 	}
 
-	var lastErr error
-	for i := 0; i < 5; i++ {
+	_, isRestartChild := os.LookupEnv("CMDC_PAK_RESTART_NONCE")
+
+	childWaits := 0
+	bindAttempts := 0
+	for {
 		// No WriteTimeout: SSE responses can legitimately stream for
 		// minutes. ReadHeaderTimeout bounds slow-header clients.
 		srv := &http.Server{
@@ -688,14 +773,44 @@ func main() {
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}
-		lastErr = srv.ListenAndServe()
-		if lastErr != nil && strings.Contains(strings.ToLower(lastErr.Error()), "bind") {
+		// Bind explicitly: a restarting parent releases its listener so the
+		// child can take over the same port.
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			if isRestartChild {
+				// Parent still holds the port; wait for it to release.
+				childWaits++
+				if childWaits > 40 {
+					log.Fatalf("restart child: %s never became free: %v", addr, err)
+				}
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			bindAttempts++
+			if bindAttempts >= 5 {
+				log.Fatalf("failed to bind after retries: %v", err)
+			}
 			cfg.Port++
 			addr = fmt.Sprintf("127.0.0.1:%d", cfg.Port)
 			logLine("port occupied, trying %s (not saved to config; restart keeps original port %d)", addr, cfg.Port-1)
 			continue
 		}
-		log.Fatalf("listen: %v", lastErr)
+		currentListener = ln
+		logLine("listening on %s", addr)
+		serveErr := srv.Serve(ln)
+		currentListener = nil
+
+		if nonce, ok := restartSpawnNonce(); ok {
+			port := cfg.Port
+			logLine("restart: listener released, waiting for the new instance on %d", port)
+			if waitChildHealthy(port, nonce, 20*time.Second) {
+				logLine("restart: new instance healthy, exiting")
+				return
+			}
+			clearRestartNonce()
+			logLine("restart: new instance did not come up; re-acquiring the port")
+			continue
+		}
+		log.Fatalf("listen: %v", serveErr)
 	}
-	log.Fatalf("failed to bind after retries: %v", lastErr)
 }

@@ -545,34 +545,23 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 			effort = v
 		}
 	}
-	// Anthropic-native thinking switch: honor an explicit disable.
-	thinkingDisabled := false
-	if th, ok := bodyMap["thinking"].(map[string]any); ok {
-		if t, _ := th["type"].(string); t == "disabled" {
-			thinkingDisabled = true
-		}
-	}
-	// Anthropic 通道默认启用该模型支持的最大思考强度（思考内容 1:1 透传），
-	// 目录里没有该模型时直传 "max" 给网关。三类例外：
-	//   - 客户端显式关闭思考（reasoning_effort=none 或 thinking.disabled）：尊重其意图；
-	//   - 小配额请求（标题/摘要等辅助调用）：保持思考关闭，避免为此类
-	//     请求白跑一轮重思考，浪费时间和额度。
-	switch {
-	case thinkingDisabled:
-		logLine("%s: thinking disabled via thinking.type=disabled", model)
-	case effort == "":
-		if clientMaxTokens && maxTokens <= auxTokenThreshold {
+	// Anthropic 通道始终启用该模型支持的最大思考强度（思考内容 1:1 透传），
+	// 目录里没有该模型时直传 "max" 给网关。客户端的 thinking/effort 开关
+	// 一律忽略（包括 thinking.disabled 和 reasoning_effort=none）：该通道
+	// 的定位就是最大思考。唯一的例外是小配额请求（标题/摘要等辅助调用），
+	// 保持思考关闭以节省时间和额度。
+	if clientMaxTokens && maxTokens <= auxTokenThreshold {
+		if effort != "" {
 			logLine("%s: small max_tokens=%d, keeping thinking off (auxiliary request)", model, maxTokens)
-		} else if top := maxEffortOf(model); top != "" {
-			effort = top
-		} else {
-			effort = "max"
 		}
-	case strings.EqualFold(effort, "none"):
-		logLine("%s: thinking explicitly disabled by client", model)
-	default:
-		// Explicit level from the client: keep it (forwardToGateway may
-		// raise it to the model's top rung).
+		effort = ""
+	} else if top := maxEffortOf(model); top != "" {
+		if effort != top {
+			logLine("%s: forcing max thinking (model top=%s, client asked %q)", model, top, effort)
+		}
+		effort = top
+	} else {
+		effort = "max"
 	}
 	// 思考与正文共用 max_tokens 配额：开启思考时统一抬升至 128000（上游上限），
 	// 避免思考吃光配额导致正文被截断（finishReason=length）。

@@ -118,7 +118,59 @@ func forwardToGateway(ctx context.Context, auth *commandCodeAuth, model string, 
 	upReq.Header.Set("x-taste-learning", "false")
 	upReq.Header.Set("x-session-id", sessionID)
 	upReq.Header.Set("Authorization", "Bearer "+auth.ApiKey)
-	return upstreamClient().Do(upReq)
+	return doUpstreamWithRetry(ctx, upReq, envBytes)
+}
+
+// isTLSHandshakeError reports transport failures that are worth one retry on
+// a fresh connection: transient handshake corruption (notably a proxy
+// mid-failover returning a nameless certificate) rather than a real
+// rejection. Genuine certificate problems — expired, revoked, unknown
+// authority, hostname mismatch — are NOT retried.
+func isTLSHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	for _, permanent := range []string{
+		"expired",
+		"not yet valid",
+		"unknown authority",
+		"not trusted",
+		"certificate is valid for ",
+		"revoked",
+	} {
+		if strings.Contains(lower, permanent) {
+			return false
+		}
+	}
+	return strings.Contains(msg, "tls: failed to verify certificate") ||
+		strings.Contains(msg, "tls: handshake failure") ||
+		strings.Contains(msg, "remote error: tls:") ||
+		strings.Contains(msg, "connection reset by peer")
+}
+
+// doUpstreamWithRetry sends the request once; on a transient TLS/transport
+// failure it rebuilds the request on a fresh (non-reused) connection and
+// tries once more. The body is replayable from envBytes.
+func doUpstreamWithRetry(ctx context.Context, upReq *http.Request, envBytes []byte) (*http.Response, error) {
+	resp, err := upstreamClient().Do(upReq)
+	if !isTLSHandshakeError(err) {
+		return resp, err
+	}
+	logLine("upstream TLS/transport blip (%v), retrying once on a fresh connection", err)
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	retryReq, err2 := http.NewRequestWithContext(ctx, http.MethodPost, gatewayBaseURL()+generatePath, bytes.NewReader(envBytes))
+	if err2 != nil {
+		return nil, err
+	}
+	for k, vv := range upReq.Header {
+		retryReq.Header[k] = vv
+	}
+	retryReq.Close = true // force a new connection, bypass the pooled one
+	return upstreamClient().Do(retryReq)
 }
 
 // threadRegistry maps a client conversation key to a stable upstream
