@@ -709,10 +709,16 @@ func main() {
 		// exits once the child reports healthy with the matching nonce.
 		if _, isRestartChild := os.LookupEnv("CMDC_PAK_RESTART_NONCE"); !isRestartChild {
 			if isSelfInstance(cfg.Port) {
-				log.Printf("already running on %d, exiting", cfg.Port)
+				logLine("already running on %d, exiting", cfg.Port)
+				// Double-clicking while the service runs should still feel
+				// like launching the app: surface the existing dashboard.
+				if os.Getenv("CMDC_PAK_NO_BROWSER") == "" {
+					_ = exec.Command("rundll32", "url.dll,FileProtocolHandler",
+						fmt.Sprintf("http://127.0.0.1:%d/", cfg.Port)).Start()
+				}
 				return
 			}
-			log.Printf("port %d occupied by another program, trying next ports", cfg.Port)
+			logLine("port %d occupied by another program, trying next ports", cfg.Port)
 		}
 	}
 
@@ -790,14 +796,16 @@ func main() {
 				// Parent still holds the port; wait for it to release.
 				childWaits++
 				if childWaits > 40 {
-					log.Fatalf("restart child: %s never became free: %v", addr, err)
+					logLine("restart child: %s never became free: %v", addr, err)
+					os.Exit(1)
 				}
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 			bindAttempts++
 			if bindAttempts >= 5 {
-				log.Fatalf("failed to bind after retries: %v", err)
+				logLine("failed to bind after retries: %v", err)
+				os.Exit(1)
 			}
 			cfg.Port++
 			addr = fmt.Sprintf("127.0.0.1:%d", cfg.Port)
@@ -823,6 +831,7 @@ func main() {
 			logLine("restart: new instance did not come up; re-acquiring the port")
 			continue
 		}
-		log.Fatalf("listen: %v", serveErr)
+		logLine("listen: %v", serveErr)
+		os.Exit(1)
 	}
 }
