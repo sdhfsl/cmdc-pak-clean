@@ -343,6 +343,15 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 	go restartProcess(port)
 }
 
+// openDashboard opens the dashboard in the default browser once the server
+// is listening. Set CMDC_PAK_NO_BROWSER=1 to suppress (headless/testing).
+func openDashboard(url string) {
+	time.Sleep(400 * time.Millisecond) // let the listener accept
+	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start(); err != nil {
+		logLine("could not open the dashboard automatically: %v (open %s manually)", err, url)
+	}
+}
+
 // currentListener holds the live TCP listener so a restart can release the
 // port for the child process before the parent exits. restartNonce is set
 // while a handoff is in flight; the main serve loop watches it.
@@ -797,6 +806,9 @@ func main() {
 		}
 		currentListener = ln
 		logLine("listening on %s", addr)
+		if !isRestartChild && os.Getenv("CMDC_PAK_NO_BROWSER") == "" {
+			go openDashboard(fmt.Sprintf("http://127.0.0.1:%d/", cfg.Port))
+		}
 		serveErr := srv.Serve(ln)
 		currentListener = nil
 

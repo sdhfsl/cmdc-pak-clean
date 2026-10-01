@@ -17,7 +17,7 @@
 ## 构建
 
 ```bash
-go build -ldflags="-s -w" -o cmdc-pak-clean.exe .
+go build -ldflags="-s -w -H=windowsgui" -o cmdc-pak-clean.exe .
 ```
 
 ## 运行
@@ -26,7 +26,7 @@ go build -ldflags="-s -w" -o cmdc-pak-clean.exe .
 ./cmdc-pak-clean.exe
 ```
 
-启动后面板地址：`http://127.0.0.1:8787/`
+启动后自动打开面板（`http://127.0.0.1:8787/`）；双击运行时无控制台窗口，日志在配置目录的 `cmdc-pak-clean.log`。
 
 | 客户端 | Base URL | API Key | 协议 |
 |---|---|---|---|
@@ -46,6 +46,7 @@ go build -ldflags="-s -w" -o cmdc-pak-clean.exe .
 | `CMDC_PAK_FORCE_EFFORT` | 开 | 设为 `off` 关闭思考档位拉满 |
 | `CMDC_PAK_TOOL_NUDGE` | 关 | 设为 `1` 在 system 末尾追加"优先使用工具"提示 |
 | `CMDC_HARNESS_PATH` | 自动探测 | 桌面版 harness 文件路径覆盖 |
+| `CMDC_PAK_NO_BROWSER` | 关 | 设为 `1` 启动时不自动打开面板 |
 
 ## 免责声明
 
