@@ -103,6 +103,20 @@ func forwardToGateway(ctx context.Context, auth *commandCodeAuth, model string, 
 		"mode":           "agent",
 		"params":         params,
 	}
+	// The upstream enforces input + completion <= context window. Once a
+	// conversation is long enough that the fixed completion budget no longer
+	// fits, shrink it to the room that is left instead of letting the whole
+	// request be rejected.
+	if fit := fitContextBudget(model, maxTokens, envelope); fit.Shrunk {
+		params["max_tokens"] = fit.Fitted
+		logLine("%s: max_tokens %d reduced to %d to fit context window (estimated input ~%d, limit %d)",
+			model, maxTokens, fit.Fitted, fit.Estimated, fit.Limit)
+		if fit.Over {
+			logLine("%s: conversation history (~%d tokens) fills the model context window (%d); "+
+				"compact the history or start a new conversation — the upstream will keep rejecting this one",
+				model, fit.Estimated, fit.Limit)
+		}
+	}
 	envBytes, _ := json.Marshal(envelope)
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayBaseURL()+generatePath, bytes.NewReader(envBytes))
 	if err != nil {

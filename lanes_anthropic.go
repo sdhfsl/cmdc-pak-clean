@@ -363,6 +363,7 @@ func assembleAnthropicJSON(ctx context.Context, w http.ResponseWriter, body io.R
 	textBuf := &strings.Builder{}
 	stopReason := "end_turn"
 	var inTok, outTok float64
+	errMsg := ""
 
 	flushThinking := func() {
 		if thinkingBuf.Len() > 0 {
@@ -427,11 +428,19 @@ func assembleAnthropicJSON(ctx context.Context, w http.ResponseWriter, body io.R
 		case "error":
 			if msg := eventErrorText(ev); msg != "" {
 				logLine("anthropic lane upstream error: %s", msg)
+				errMsg = msg
 			}
 		}
 	}
 	flushThinking()
 	flushText()
+	// Surface upstream failures the way the streaming path does: without a
+	// text block the client would see an empty end_turn and mistake the
+	// failure for a completed empty answer.
+	if errMsg != "" {
+		content = append(content, map[string]any{"type": "text",
+			"text": "\n\n[upstream error: " + errMsg + "]"})
+	}
 	if scannerTruncated(scanner) {
 		logLine("upstream body truncated 8MB line (model=%s): reporting max_tokens", model)
 		stopReason = "max_tokens"

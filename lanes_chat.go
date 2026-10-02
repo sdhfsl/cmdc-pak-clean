@@ -462,6 +462,7 @@ func assembleChatJSON(ctx context.Context, w http.ResponseWriter, body io.Reader
 	var toolCalls []any
 	finishReason := ""
 	var usage map[string]any
+	errMsg := ""
 
 	for scanner.Scan() {
 		select {
@@ -496,8 +497,14 @@ func assembleChatJSON(ctx context.Context, w http.ResponseWriter, body io.Reader
 		case "error":
 			if msg := eventErrorText(ev); msg != "" {
 				logLine("upstream stream error: %s", msg)
+				errMsg = msg
 			}
 		}
+	}
+	// Surface upstream failures the way the streaming path does: a silent
+	// empty "stop" would read as a completed answer.
+	if errMsg != "" {
+		text.WriteString("\n\n[upstream error: " + errMsg + "]")
 	}
 	message := map[string]any{"role": "assistant", "content": text.String()}
 	if reasoning.Len() > 0 {
@@ -512,6 +519,9 @@ func assembleChatJSON(ctx context.Context, w http.ResponseWriter, body io.Reader
 	if scannerTruncated(scanner) {
 		logLine("upstream body truncated 8MB line (model=%s): reporting length", model)
 		finishReason = "length"
+	}
+	if errMsg != "" {
+		finishReason = "error"
 	}
 	resp := map[string]any{
 		"id": chatID, "object": "chat.completion", "created": time.Now().Unix(), "model": model,
