@@ -144,10 +144,13 @@ func isTLSHandshakeError(err error) bool {
 			return false
 		}
 	}
-	return strings.Contains(msg, "tls: failed to verify certificate") ||
-		strings.Contains(msg, "tls: handshake failure") ||
-		strings.Contains(msg, "remote error: tls:") ||
-		strings.Contains(msg, "connection reset by peer")
+	return strings.Contains(lower, "tls: failed to verify certificate") ||
+		strings.Contains(lower, "tls: handshake failure") ||
+		strings.Contains(lower, "remote error: tls:") ||
+		strings.Contains(lower, "tls handshake timeout") ||
+		strings.Contains(lower, "connection reset by peer") ||
+		strings.Contains(lower, "forcibly closed") || // Windows: wsasend/wsarecv reset
+		strings.Contains(lower, "unexpected eof")
 }
 
 // doUpstreamWithRetry sends the request once; on a transient TLS/transport

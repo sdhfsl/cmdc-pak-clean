@@ -262,7 +262,7 @@ func buildWireMessages(msgs []any) ([]any, string, error) {
 			}})
 		}
 	}
-	return out, strings.Join(systemParts, "\n\n"), nil
+	return repairToolPairing(out), strings.Join(systemParts, "\n\n"), nil
 }
 
 func buildWireTools(tools []any) []any {

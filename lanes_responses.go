@@ -132,7 +132,63 @@ func responsesInputToWire(input any) ([]any, string) {
 			}
 		}
 	}
-	return out, strings.Join(sysParts, "\n\n")
+	return repairToolPairing(out), strings.Join(sysParts, "\n\n")
+}
+
+// repairToolPairing makes tool-call history structurally valid for the
+// gateway: an assistant message carrying tool-calls must be followed by a
+// tool message for every call id (the gateway rejects the whole request
+// otherwise). Clients that truncate their transcript can leave calls
+// unanswered, so a placeholder result is injected for each orphan.
+func repairToolPairing(msgs []any) []any {
+	answered := map[string]bool{}
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role == "tool" {
+			for _, b := range toAnySlice(m["content"]) {
+				if bm, ok := b.(map[string]any); ok {
+					if id, _ := bm["toolCallId"].(string); id != "" {
+						answered[id] = true
+					}
+				}
+			}
+		}
+	}
+	out := make([]any, 0, len(msgs))
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		out = append(out, m)
+		if role, _ := m["role"].(string); role != "assistant" {
+			continue
+		}
+		for _, b := range toAnySlice(m["content"]) {
+			bm, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := bm["type"].(string); t != "tool-call" {
+				continue
+			}
+			id, _ := bm["toolCallId"].(string)
+			if id == "" || answered[id] {
+				continue
+			}
+			name, _ := bm["toolName"].(string)
+			logLine("injecting placeholder result for unanswered tool call %s", id)
+			out = append(out, map[string]any{"role": "tool", "content": []any{
+				map[string]any{"type": "tool-result", "toolCallId": id, "toolName": name,
+					"output": map[string]any{"type": "text", "value": "(tool result unavailable)"}},
+			}})
+		}
+	}
+	return out
 }
 
 func responsesToolsToWire(tools []any) ([]any, map[string]bool) {
