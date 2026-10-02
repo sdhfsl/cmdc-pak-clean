@@ -103,7 +103,7 @@ func anthropicMessagesToWire(msgs []any) []any {
 		}
 		flush()
 	}
-	return out
+	return repairToolPairing(out)
 }
 
 // anthropicToolResultBlock converts an Anthropic tool_result block into the
